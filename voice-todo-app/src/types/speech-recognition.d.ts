@@ -31,6 +31,7 @@ export interface SpeechRecognitionAlternative {
 
 export interface SpeechRecognition extends EventTarget {
     continuous: boolean;
+    grammars: any;
     interimResults: boolean;
     lang: string;
     maxAlternatives: number;

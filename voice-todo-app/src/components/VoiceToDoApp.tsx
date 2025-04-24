@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Check, Trash, Square, Edit } from 'lucide-react';
 
-import { SpeechRecognition, SpeechRecognitionErrorEvent, SpeechRecognitionEvent } from "../types/speech-recognition";
-
 // Import type declarations to ensure TypeScript recognizes the Web Speech API
 import '../types/speech-recognition.d';
+import { SpeechRecognition, SpeechRecognitionErrorEvent, SpeechRecognitionEvent } from "../types/speech-recognition";
 
 // Define our interfaces
 interface Task {
@@ -25,6 +24,46 @@ const VoiceToDoApp: React.FC = () => {
     // Using any here because TypeScript doesn't have built-in types for Web Speech API
     const recognitionRef = useRef<SpeechRecognition | null>(null);
 
+    // Set up speech recognition grammars
+    const setupSpeechGrammars = () => {
+        if (!recognitionRef.current || !(window as any).SpeechGrammarList) {
+            return;
+        }
+
+        try {
+            // Create a grammar list
+            const SpeechGrammarList = (window as any).SpeechGrammarList || (window as any).webkitSpeechGrammarList;
+            const grammarList = new SpeechGrammarList();
+
+            // Define grammars using JSGF format
+            // Add task command grammar
+            const addTaskGrammar = '#JSGF V1.0; grammar add; public <add> = add task [<item>];';
+
+            // Mark as done command grammar
+            const markDoneGrammar = '#JSGF V1.0; grammar mark; public <mark> = mark [<item>] as done;';
+
+            // Delete task command grammar
+            const deleteTaskGrammar = '#JSGF V1.0; grammar delete; public <delete> = delete task [<item>];';
+
+            // Clear all tasks command grammar
+            const clearAllGrammar = '#JSGF V1.0; grammar clear; public <clear> = clear all tasks;';
+
+            // Add grammars to the list with weights (higher = more important)
+            grammarList.addFromString(addTaskGrammar, 1);
+            grammarList.addFromString(markDoneGrammar, 1);
+            grammarList.addFromString(deleteTaskGrammar, 1);
+            grammarList.addFromString(clearAllGrammar, 1);
+
+            // Apply grammar list to the recognition object
+            recognitionRef.current.grammars = grammarList;
+
+            setFeedback('Voice command grammars initialized');
+        } catch (error) {
+            console.error('Error setting up speech grammars:', error);
+            setFeedback('Grammar support not available in this browser');
+        }
+    };
+
     useEffect(() => {
         // Initialize speech recognition
         if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
@@ -34,6 +73,10 @@ const VoiceToDoApp: React.FC = () => {
                 recognitionRef.current.continuous = true;
                 recognitionRef.current.interimResults = true;
                 recognitionRef.current.lang = 'en-US'; // Set language to English
+                recognitionRef.current.maxAlternatives = 3; // Get multiple alternatives for better matching
+
+                // Set up speech grammars
+                setupSpeechGrammars();
 
                 recognitionRef.current.onresult = (event: SpeechRecognitionEvent) => {
                     // Clear previous results before setting new ones
@@ -46,6 +89,14 @@ const VoiceToDoApp: React.FC = () => {
                         setTranscript(currentTranscript);
                         setEditedTranscript(currentTranscript);
                         setProcessingCommand(true);
+
+                        // Display alternatives if available for debugging
+                        if (event.results[event.results.length - 1].length > 1) {
+                            const alternatives = Array.from(event.results[event.results.length - 1])
+                                .map((result, index) => `${index + 1}: ${result.transcript} (${result.confidence.toFixed(2)})`)
+                                .join(', ');
+                            console.log('Alternatives:', alternatives);
+                        }
                     }
                 };
 
@@ -142,34 +193,91 @@ const VoiceToDoApp: React.FC = () => {
         setFeedback('Command cancelled');
     };
 
-    const processVoiceCommand = (command: string): void => {
-        // Convert to lowercase for easier matching
-        const lowerCommand = command.toLowerCase();
+    // Helper function to find the best match for a command pattern
+    const findBestCommandMatch = (input: string): { command: string, content: string } => {
+        const lowerInput = input.toLowerCase().trim();
 
-        // Add a task
-        if (lowerCommand.includes('add task')) {
-            const taskContent = lowerCommand.replace('add task', '').trim();
-            if (taskContent) {
-                addTask(taskContent);
-                setFeedback(`Added task: "${taskContent}"`);
+        // Command patterns with their regex patterns
+        const commandPatterns = [
+            {
+                name: 'add',
+                pattern: /add\s+task\s+(.+)/i,
+                altPatterns: [/add\s+(.+)/i, /create\s+task\s+(.+)/i, /new\s+task\s+(.+)/i]
+            },
+            {
+                name: 'mark',
+                pattern: /mark\s+(.+)\s+as\s+done/i,
+                altPatterns: [/complete\s+(.+)/i, /finish\s+(.+)/i, /check\s+off\s+(.+)/i]
+            },
+            {
+                name: 'delete',
+                pattern: /delete\s+task\s+(.+)/i,
+                altPatterns: [/remove\s+task\s+(.+)/i, /delete\s+(.+)/i, /remove\s+(.+)/i]
+            },
+            {
+                name: 'clear',
+                pattern: /clear\s+all\s+tasks/i,
+                altPatterns: [/clear\s+tasks/i, /delete\s+all\s+tasks/i, /remove\s+all\s+tasks/i]
+            }
+        ];
+
+        // Try to find a match with the main patterns
+        for (const cmd of commandPatterns) {
+            const match = lowerInput.match(cmd.pattern);
+            if (match) {
+                return { command: cmd.name, content: match[1] || '' };
+            }
+
+            // If main pattern doesn't match, try alternative patterns
+            for (const altPattern of cmd.altPatterns) {
+                const altMatch = lowerInput.match(altPattern);
+                if (altMatch) {
+                    return { command: cmd.name, content: altMatch[1] || '' };
+                }
             }
         }
-        // Mark task as done
-        else if (lowerCommand.includes('mark') && lowerCommand.includes('as done')) {
-            const taskToMark = lowerCommand.replace('mark', '').replace('as done', '').trim();
-            markTaskAsDone(taskToMark);
-        }
-        // Delete task
-        else if (lowerCommand.includes('delete task')) {
-            const taskToDelete = lowerCommand.replace('delete task', '').trim();
-            deleteTask(taskToDelete);
-        }
-        // Clear all tasks
-        else if (lowerCommand.includes('clear all tasks')) {
-            setTasks([]);
-            setFeedback('All tasks cleared');
-        } else {
-            setFeedback(`Didn't recognize command: "${command}"`);
+
+        // If no match found, return the original input as "unknown" command
+        return { command: 'unknown', content: lowerInput };
+    };
+
+    const processVoiceCommand = (command: string): void => {
+        const { command: cmdType, content } = findBestCommandMatch(command);
+
+        switch (cmdType) {
+            case 'add':
+                if (content) {
+                    addTask(content);
+                    setFeedback(`Added task: "${content}"`);
+                } else {
+                    setFeedback('No task content specified');
+                }
+                break;
+
+            case 'mark':
+                if (content) {
+                    markTaskAsDone(content);
+                } else {
+                    setFeedback('No task specified to mark as done');
+                }
+                break;
+
+            case 'delete':
+                if (content) {
+                    deleteTask(content);
+                } else {
+                    setFeedback('No task specified to delete');
+                }
+                break;
+
+            case 'clear':
+                setTasks([]);
+                setFeedback('All tasks cleared');
+                break;
+
+            default:
+                setFeedback(`Didn't recognize command: "${command}"`);
+                break;
         }
     };
 
